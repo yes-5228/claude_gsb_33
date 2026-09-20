@@ -75,6 +75,7 @@ class IssueOut(BaseModel):
     assignee: str
     report_time: datetime
     deadline: datetime | None = None
+    is_overdue: bool = Field(default=False, description="是否超期（服务端统一判定口径）")
     images: list[str] = Field(default_factory=list)
     closed_at: datetime | None = None
     created_at: datetime

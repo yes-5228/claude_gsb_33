@@ -1,4 +1,4 @@
-import { isOverdue, scoreTone, severityTone, statusTone } from '../utils/format.js';
+import { scoreTone, severityTone, statusTone } from '../utils/format.js';
 
 export function StatusTag({ status }) {
   return <span className={`tag ${statusTone(status)}`}>{status}</span>;
@@ -12,8 +12,9 @@ export function ScorePill({ score }) {
   return <span className={`score-pill ${scoreTone(score)}`}>{Number(score).toFixed(1)}</span>;
 }
 
-export function OverdueTag({ deadline, status }) {
-  if (!isOverdue(deadline, status)) return null;
+/** 超期标签：直接渲染后端统一判定的 is_overdue 结论，前端不再自行计算。 */
+export function OverdueTag({ overdue }) {
+  if (!overdue) return null;
   return <span className="tag tag-danger">已超期</span>;
 }
 

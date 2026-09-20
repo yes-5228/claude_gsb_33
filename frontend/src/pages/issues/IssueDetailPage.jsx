@@ -110,7 +110,7 @@ export default function IssueDetailPage() {
                   <h3>{issue.title}</h3>
                   <StatusTag status={issue.status} />
                   <SeverityTag severity={issue.severity} />
-                  <OverdueTag deadline={issue.deadline} status={issue.status} />
+                  <OverdueTag overdue={issue.is_overdue} />
                 </div>
                 <span className="hint">最后更新：{formatDateTime(issue.updated_at)}</span>
               </div>

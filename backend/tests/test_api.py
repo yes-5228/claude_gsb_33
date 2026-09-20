@@ -1,5 +1,7 @@
 """接口级测试：覆盖台账、巡查、问题整改与统计看板。"""
 
+import csv
+import io
 from datetime import datetime, timedelta
 
 from tests.conftest import full_items
@@ -223,3 +225,98 @@ def test_dashboard_stats(client, restroom):
     }
     assert payload["top_restrooms"]
     assert "rectification_rate" in overview
+
+
+def test_overdue_consistency_across_endpoints(client, restroom):
+    """超期判定收敛到一处：列表筛选、详情、看板、导出对同一批问题结论一致。"""
+    past = (datetime.now() - timedelta(days=1)).isoformat()
+    future = (datetime.now() + timedelta(days=1)).isoformat()
+
+    def create(title, deadline):
+        payload = {"restroom_id": restroom["id"], "title": title}
+        if deadline is not None:
+            payload["deadline"] = deadline
+        response = client.post("/api/v1/issues", json=payload)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def transit(issue_id, to_status):
+        response = client.post(
+            f"/api/v1/issues/{issue_id}/transitions",
+            json={"to_status": to_status, "operator": "值班长"},
+        )
+        assert response.status_code == 200, response.text
+
+    overdue_pending = create("超期-待整改", past)
+    overdue_processing = create("超期-整改中", past)
+    overdue_reviewing = create("超期-待验收", past)
+    done_past = create("已完成-期限已过", past)
+    closed_past = create("已关闭-期限已过", past)
+    future_deadline = create("未超期-期限未到", future)
+    no_deadline = create("未超期-无期限", None)
+
+    transit(overdue_processing["id"], "整改中")
+    transit(overdue_reviewing["id"], "整改中")
+    transit(overdue_reviewing["id"], "待验收")
+    for target in ("整改中", "待验收", "已完成"):
+        transit(done_past["id"], target)
+    transit(closed_past["id"], "已关闭")
+
+    expected_overdue_ids = {
+        overdue_pending["id"],
+        overdue_processing["id"],
+        overdue_reviewing["id"],
+    }
+    expected_flags = {
+        overdue_pending["id"]: True,
+        overdue_processing["id"]: True,
+        overdue_reviewing["id"]: True,
+        done_past["id"]: False,  # 已闭环，期限已过也不算超期
+        closed_past["id"]: False,
+        future_deadline["id"]: False,
+        no_deadline["id"]: False,
+    }
+
+    # 列表筛选：超期集合与预期一致，且每行都带统一判定的 is_overdue
+    overdue_list = client.get(
+        "/api/v1/issues", params={"overdue": "true", "page_size": 100}
+    ).json()
+    overdue_ids = {item["id"] for item in overdue_list["items"]}
+    assert expected_overdue_ids <= overdue_ids
+    assert all(item["is_overdue"] for item in overdue_list["items"])
+
+    # 列表与详情同口径：逐条比对 is_overdue
+    all_items = client.get("/api/v1/issues", params={"page_size": 100}).json()["items"]
+    listed_flags = {item["id"]: item["is_overdue"] for item in all_items}
+    for issue_id, expected in expected_flags.items():
+        assert listed_flags[issue_id] is expected
+        detail = client.get(f"/api/v1/issues/{issue_id}").json()
+        assert detail["is_overdue"] is expected
+
+    # 看板同口径：超期数与列表筛选总数精确相等
+    overview = client.get("/api/v1/stats/overview").json()
+    assert overview["issue_overdue"] == overdue_list["meta"]["total"]
+
+    # overdue=false 是 true 的补集：两者相加等于全部问题
+    not_overdue = client.get("/api/v1/issues", params={"overdue": "false"}).json()
+    total_all = client.get("/api/v1/issues").json()["meta"]["total"]
+    assert overdue_list["meta"]["total"] + not_overdue["meta"]["total"] == total_all
+
+    # 导出同口径：CSV 中的超期清单与列表筛选结果一致
+    exported = client.get("/api/v1/issues/export", params={"overdue": "true"})
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith("text/csv")
+    assert "attachment" in exported.headers["content-disposition"]
+    rows = list(csv.reader(io.StringIO(exported.text.lstrip("\ufeff"))))
+    header, body = rows[0], rows[1:]
+    code_idx, overdue_idx = header.index("编号"), header.index("是否超期")
+    assert {row[code_idx] for row in body} == {
+        item["code"] for item in overdue_list["items"]
+    }
+    assert all(row[overdue_idx] == "是" for row in body)
+
+    # 未超期导出与超期导出互补
+    exported_not = client.get("/api/v1/issues/export", params={"overdue": "false"})
+    rows_not = list(csv.reader(io.StringIO(exported_not.text.lstrip("\ufeff"))))
+    assert all(row[overdue_idx] == "否" for row in rows_not[1:])
+    assert len(body) + len(rows_not) - 1 == total_all

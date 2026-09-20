@@ -151,6 +151,14 @@ export default function IssueListPage() {
             <button type="button" className="btn" onClick={list.resetFilters}>
               重置
             </button>
+            <button
+              type="button"
+              className="btn"
+              title="按当前筛选条件导出问题清单，超期口径与列表一致"
+              onClick={() => issueApi.exportCsv(list.filters)}
+            >
+              导出 CSV
+            </button>
           </div>
         </section>
 
@@ -190,7 +198,7 @@ export default function IssueListPage() {
                 render: (row) => (
                   <span className="inline">
                     <StatusTag status={row.status} />
-                    <OverdueTag deadline={row.deadline} status={row.status} />
+                    <OverdueTag overdue={row.is_overdue} />
                   </span>
                 ),
               },

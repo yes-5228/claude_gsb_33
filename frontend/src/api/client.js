@@ -68,4 +68,4 @@ export const http = {
   delete: (path, params) => request(path, { method: 'DELETE', params }),
 };
 
-export { API_BASE };
+export { API_BASE, buildUrl };

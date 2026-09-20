@@ -1,9 +1,9 @@
 """问题上报与整改跟踪接口。"""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -65,8 +65,10 @@ def list_issues(
         sort_by=sort_by,
         order=order,
     )
+    # 同一页数据共用一个参考时刻，保证页内超期结论一致
+    now = datetime.now()
     return Page[IssueOut](
-        items=[issue_service.to_out(row) for row in rows],
+        items=[issue_service.to_out(row, now=now) for row in rows],
         meta=build_meta(total, pagination),
     )
 
@@ -74,6 +76,43 @@ def list_issues(
 @router.post("", response_model=IssueOut, status_code=201, summary="上报问题")
 def create_issue(payload: IssueCreate, db: Annotated[Session, Depends(get_db)]) -> IssueOut:
     return issue_service.to_out(issue_service.create_issue(db, payload))
+
+
+@router.get("/export", summary="导出问题清单（CSV）")
+def export_issues(
+    db: Annotated[Session, Depends(get_db)],
+    restroom_id: Annotated[int | None, Query(description="按公厕过滤")] = None,
+    inspection_id: Annotated[int | None, Query(description="按巡查记录过滤")] = None,
+    district: Annotated[str | None, Query(description="按区域过滤")] = None,
+    status: Annotated[str | None, Query(description="整改状态")] = None,
+    open_only: Annotated[bool, Query(description="仅看未闭环问题")] = False,
+    category: Annotated[str | None, Query(description="问题分类")] = None,
+    severity: Annotated[str | None, Query(description="严重程度")] = None,
+    keyword: Annotated[str | None, Query(description="标题/描述/编号模糊搜索")] = None,
+    overdue: Annotated[bool | None, Query(description="是否超期")] = None,
+    date_from: Annotated[date | None, Query(description="上报开始日期")] = None,
+    date_to: Annotated[date | None, Query(description="上报结束日期")] = None,
+) -> Response:
+    """导出与列表同口径的问题清单；「是否超期」列与列表、详情、看板同一判定。"""
+    content, filename = issue_service.export_issues_csv(
+        db,
+        restroom_id=restroom_id,
+        inspection_id=inspection_id,
+        district=district,
+        status=status,
+        statuses=list(OPEN_ISSUE_STATUSES) if open_only else None,
+        category=category,
+        severity=severity,
+        keyword=keyword,
+        overdue=overdue,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{issue_id}", response_model=IssueOut, summary="问题详情与整改轨迹")

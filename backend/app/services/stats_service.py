@@ -40,13 +40,8 @@ def overview(db: Session) -> OverviewStats:
 
     issue_total = _count(db, Issue)
     issue_open = _count(db, Issue, Issue.status.in_(OPEN_ISSUE_STATUSES))
-    issue_overdue = _count(
-        db,
-        Issue,
-        Issue.deadline.is_not(None),
-        Issue.deadline < now,
-        Issue.status.in_(OPEN_ISSUE_STATUSES),
-    )
+    # 超期口径与问题列表/详情完全一致（issue_service 统一判定），共用同一参考时刻
+    issue_overdue = _count(db, Issue, *issue_service.overdue_conditions(now))
     done_count = _count(db, Issue, Issue.status == IssueStatus.DONE.value)
     closed_count = _count(db, Issue, Issue.status == IssueStatus.CLOSED.value)
     finished = done_count + closed_count
@@ -228,6 +223,7 @@ def restroom_ranking(db: Session, limit: int = 8) -> list[RestroomRankItem]:
 
 
 def dashboard(db: Session, trend_days: int = 14) -> DashboardStats:
+    now = datetime.now()
     recent_issues, _ = issue_service.list_issues(db, page=1, page_size=5, sort_by="report_time")
     recent_inspections, _ = inspection_service.list_inspections(
         db, page=1, page_size=5, sort_by="inspect_time"
@@ -240,6 +236,6 @@ def dashboard(db: Session, trend_days: int = 14) -> DashboardStats:
         inspection_trend=inspection_trend(db, days=trend_days),
         districts=district_stats(db),
         top_restrooms=restroom_ranking(db),
-        recent_issues=[issue_service.to_out(issue) for issue in recent_issues],
+        recent_issues=[issue_service.to_out(issue, now=now) for issue in recent_issues],
         recent_inspections=[inspection_service.to_out(item) for item in recent_inspections],
     )

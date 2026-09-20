@@ -1,8 +1,10 @@
 """问题上报与整改跟踪业务逻辑。"""
 
+import csv
+import io
 from datetime import date, datetime, time
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
@@ -52,16 +54,31 @@ def get_issue(db: Session, issue_id: int) -> Issue:
     return issue
 
 
-def to_out(issue: Issue) -> IssueOut:
-    return IssueOut.model_validate(issue)
+def to_out(issue: Issue, *, now: datetime | None = None) -> IssueOut:
+    """序列化问题，并附上统一口径的超期结论（同一批数据共用 now）。"""
+    out = IssueOut.model_validate(issue)
+    return out.model_copy(update={"is_overdue": is_overdue(issue, now)})
 
 
-def is_overdue(issue: Issue) -> bool:
-    return (
-        issue.deadline is not None
-        and issue.status in OPEN_ISSUE_STATUSES
-        and issue.deadline < datetime.now()
-    )
+def overdue_conditions(now: datetime | None = None) -> list:
+    """超期判定（SQL 条件版）——全系统唯一口径。
+
+    参与状态：OPEN_ISSUE_STATUSES（待整改/整改中/待验收，即未闭环）；
+    比较时刻：整改期限早于参考时刻（默认当前时间），一次查询共用一个时刻。
+    """
+    moment = now or datetime.now()
+    return [
+        Issue.deadline.is_not(None),
+        Issue.deadline < moment,
+        Issue.status.in_(OPEN_ISSUE_STATUSES),
+    ]
+
+
+def is_overdue(issue: Issue, now: datetime | None = None) -> bool:
+    """超期判定（对象版），与 overdue_conditions 同口径。"""
+    if issue.deadline is None or issue.status not in OPEN_ISSUE_STATUSES:
+        return False
+    return issue.deadline < (now or datetime.now())
 
 
 def list_issues(
@@ -104,17 +121,10 @@ def list_issues(
         stmt = stmt.where(Issue.report_time >= datetime.combine(date_from, time.min))
     if date_to:
         stmt = stmt.where(Issue.report_time <= datetime.combine(date_to, time.max))
-    if overdue is True:
-        stmt = stmt.where(
-            Issue.deadline.is_not(None),
-            Issue.deadline < datetime.now(),
-            Issue.status.in_(OPEN_ISSUE_STATUSES),
-        )
-    elif overdue is False:
-        stmt = stmt.where(
-            or_(Issue.deadline.is_(None), Issue.deadline >= datetime.now()),
-            Issue.status.in_(OPEN_ISSUE_STATUSES),
-        )
+    if overdue is not None:
+        # 超期与否互为补集：overdue=true 的数量 + overdue=false 的数量 = 全部
+        conditions = overdue_conditions()
+        stmt = stmt.where(*conditions) if overdue else stmt.where(not_(and_(*conditions)))
     if keyword:
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(
@@ -241,3 +251,61 @@ def delete_issue(db: Session, issue_id: int) -> None:
     issue = get_issue(db, issue_id)
     db.delete(issue)
     db.commit()
+
+
+EXPORT_LIMIT = 5000
+
+_EXPORT_HEADERS = [
+    "编号",
+    "标题",
+    "所属公厕",
+    "区域",
+    "分类",
+    "严重程度",
+    "状态",
+    "是否超期",
+    "整改责任人",
+    "上报人",
+    "上报时间",
+    "整改期限",
+    "闭环时间",
+]
+
+
+def _fmt_dt(value: datetime | None) -> str:
+    return value.strftime("%Y-%m-%d %H:%M") if value else ""
+
+
+def export_issues_csv(db: Session, **filters) -> tuple[str, str]:
+    """按与列表一致的筛选与超期口径导出问题清单（CSV，UTF-8 带 BOM）。
+
+    返回 (文件内容, 文件名)；整份清单共用一个参考时刻判定超期，
+    与列表筛选、问题详情、看板统计的结论保持一致。
+    """
+    rows, _total = list_issues(db, page=1, page_size=EXPORT_LIMIT, **filters)
+    now = datetime.now()
+
+    buffer = io.StringIO()
+    buffer.write("\ufeff")  # BOM，便于 Excel 直接识别中文
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_EXPORT_HEADERS)
+    for issue in rows:
+        writer.writerow(
+            [
+                issue.code,
+                issue.title,
+                issue.restroom.name if issue.restroom else "",
+                issue.restroom.district if issue.restroom else "",
+                issue.category,
+                issue.severity,
+                issue.status,
+                "是" if is_overdue(issue, now) else "否",
+                issue.assignee,
+                issue.reporter,
+                _fmt_dt(issue.report_time),
+                _fmt_dt(issue.deadline),
+                _fmt_dt(issue.closed_at),
+            ]
+        )
+    filename = f"issues-{now.strftime('%Y%m%d-%H%M%S')}.csv"
+    return buffer.getvalue(), filename
