@@ -190,7 +190,7 @@ export default function IssueListPage() {
                 render: (row) => (
                   <span className="inline">
                     <StatusTag status={row.status} />
-                    <OverdueTag deadline={row.deadline} status={row.status} />
+                    <OverdueTag isOverdue={row.is_overdue} />
                   </span>
                 ),
               },

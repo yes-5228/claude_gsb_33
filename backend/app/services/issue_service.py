@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.constants import (
     ISSUE_TRANSITIONS,
     OPEN_ISSUE_STATUSES,
+    OVERDUE_ISSUE_STATUSES,
     TRANSITION_ACTIONS,
     IssueStatus,
 )
@@ -52,16 +53,42 @@ def get_issue(db: Session, issue_id: int) -> Issue:
     return issue
 
 
-def to_out(issue: Issue) -> IssueOut:
-    return IssueOut.model_validate(issue)
+def is_issue_overdue(
+    *,
+    deadline: datetime | None,
+    status: str,
+    now: datetime,
+) -> bool:
+    """超期判定唯一入口：期限早于判定时刻，且问题仍处于超期状态范围。"""
+    return deadline is not None and status in OVERDUE_ISSUE_STATUSES and deadline < now
 
 
-def is_overdue(issue: Issue) -> bool:
+def overdue_conditions(now: datetime) -> tuple[object, ...]:
+    """供列表、看板和后续导出复用的 SQL 条件，避免各处自行解释超期状态。"""
     return (
-        issue.deadline is not None
-        and issue.status in OPEN_ISSUE_STATUSES
-        and issue.deadline < datetime.now()
+        Issue.deadline.is_not(None),
+        Issue.deadline < now,
+        Issue.status.in_(OVERDUE_ISSUE_STATUSES),
     )
+
+
+def not_overdue_conditions(now: datetime):
+    """与 overdue_conditions 互补，保证“超期/未超期”筛选口径一致。"""
+    return or_(
+        Issue.deadline.is_(None),
+        Issue.deadline >= now,
+        Issue.status.notin_(OVERDUE_ISSUE_STATUSES),
+    )
+
+
+def to_out(issue: Issue, *, now: datetime) -> IssueOut:
+    payload = IssueOut.model_validate(issue)
+    payload.is_overdue = is_issue_overdue(
+        deadline=issue.deadline,
+        status=issue.status,
+        now=now,
+    )
+    return payload
 
 
 def list_issues(
@@ -82,7 +109,9 @@ def list_issues(
     page_size: int = 10,
     sort_by: str = "report_time",
     order: str = "desc",
+    now: datetime | None = None,
 ) -> tuple[list[Issue], int]:
+    now = now or datetime.now()
     stmt = select(Issue)
     if district:
         stmt = stmt.join(Restroom, Restroom.id == Issue.restroom_id).where(
@@ -105,16 +134,9 @@ def list_issues(
     if date_to:
         stmt = stmt.where(Issue.report_time <= datetime.combine(date_to, time.max))
     if overdue is True:
-        stmt = stmt.where(
-            Issue.deadline.is_not(None),
-            Issue.deadline < datetime.now(),
-            Issue.status.in_(OPEN_ISSUE_STATUSES),
-        )
+        stmt = stmt.where(*overdue_conditions(now))
     elif overdue is False:
-        stmt = stmt.where(
-            or_(Issue.deadline.is_(None), Issue.deadline >= datetime.now()),
-            Issue.status.in_(OPEN_ISSUE_STATUSES),
-        )
+        stmt = stmt.where(not_overdue_conditions(now))
     if keyword:
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(

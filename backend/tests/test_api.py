@@ -129,6 +129,7 @@ def test_issue_lifecycle(client, restroom):
         },
     ).json()
     assert issue["status"] == "待整改"
+    assert issue["is_overdue"] is True
     assert len(issue["records"]) == 1
     assert issue["records"][0]["action"] == "上报问题"
 
@@ -179,8 +180,13 @@ def test_issue_lifecycle(client, restroom):
     )
     assert closed_record.status_code == 400
 
+    closed_detail = client.get(f"/api/v1/issues/{issue['id']}").json()
+    assert closed_detail["status"] == "已关闭"
+    assert closed_detail["is_overdue"] is False
+
     overdue = client.get("/api/v1/issues", params={"overdue": "true"}).json()
     assert overdue["meta"]["total"] == 0
+    assert all(item["is_overdue"] for item in overdue["items"])
 
     # 巡查记录可反查关联问题数量
     detail = client.get(f"/api/v1/inspections/{inspection['id']}").json()
@@ -206,6 +212,53 @@ def test_issue_requires_matching_restroom(client, restroom):
     )
     assert mismatch.status_code == 400
     assert "不一致" in mismatch.json()["detail"]
+
+
+def test_overdue_rule_is_shared_by_list_and_dashboard(client, restroom):
+    overdue_payload = {
+        "restroom_id": restroom["id"],
+        "title": "超期待整改",
+        "deadline": (datetime.now() - timedelta(hours=1)).isoformat(),
+    }
+    overdue_issue = client.post("/api/v1/issues", json=overdue_payload).json()
+    assert overdue_issue["is_overdue"] is True
+
+    due_now = client.post(
+        "/api/v1/issues",
+        json={
+            "restroom_id": restroom["id"],
+            "title": "期限未到",
+            "deadline": (datetime.now() + timedelta(days=1)).isoformat(),
+        },
+    ).json()
+    assert due_now["is_overdue"] is False
+
+    closed_past_due = client.post(
+        "/api/v1/issues",
+        json={
+            "restroom_id": restroom["id"],
+            "title": "已关闭但历史期限已过",
+            "deadline": (datetime.now() - timedelta(days=1)).isoformat(),
+        },
+    ).json()
+    closed_past_due = client.post(
+        f"/api/v1/issues/{closed_past_due['id']}/transitions",
+        json={"to_status": "已关闭", "operator": "值班长"},
+    ).json()
+    assert closed_past_due["is_overdue"] is False
+
+    overdue_rows = client.get("/api/v1/issues", params={"overdue": "true"}).json()
+    overdue_ids = {row["id"] for row in overdue_rows["items"]}
+    assert overdue_issue["id"] in overdue_ids
+    assert due_now["id"] not in overdue_ids
+    assert closed_past_due["id"] not in overdue_ids
+
+    not_overdue_rows = client.get("/api/v1/issues", params={"overdue": "false"}).json()
+    assert closed_past_due["id"] in {row["id"] for row in not_overdue_rows["items"]}
+    assert all(not row["is_overdue"] for row in not_overdue_rows["items"])
+
+    overview = client.get("/api/v1/stats/overview").json()
+    assert overview["issue_overdue"] == overdue_rows["meta"]["total"]
 
 
 def test_dashboard_stats(client, restroom):

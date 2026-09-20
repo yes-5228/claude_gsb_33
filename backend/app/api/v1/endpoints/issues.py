@@ -1,6 +1,6 @@
 """问题上报与整改跟踪接口。"""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -40,13 +40,14 @@ def list_issues(
     category: Annotated[str | None, Query(description="问题分类")] = None,
     severity: Annotated[str | None, Query(description="严重程度")] = None,
     keyword: Annotated[str | None, Query(description="标题/描述/编号模糊搜索")] = None,
-    overdue: Annotated[bool | None, Query(description="是否超期")] = None,
+    overdue: Annotated[bool | None, Query(description="是否按统一超期规则判定")] = None,
     date_from: Annotated[date | None, Query(description="上报开始日期")] = None,
     date_to: Annotated[date | None, Query(description="上报结束日期")] = None,
     sort_by: Annotated[str, Query(description="排序字段")] = "report_time",
     order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
 ) -> Page[IssueOut]:
     statuses = list(OPEN_ISSUE_STATUSES) if open_only else None
+    now = datetime.now()
     rows, total = issue_service.list_issues(
         db,
         restroom_id=restroom_id,
@@ -64,35 +65,36 @@ def list_issues(
         page_size=pagination.page_size,
         sort_by=sort_by,
         order=order,
+        now=now,
     )
     return Page[IssueOut](
-        items=[issue_service.to_out(row) for row in rows],
+        items=[issue_service.to_out(row, now=now) for row in rows],
         meta=build_meta(total, pagination),
     )
 
 
 @router.post("", response_model=IssueOut, status_code=201, summary="上报问题")
 def create_issue(payload: IssueCreate, db: Annotated[Session, Depends(get_db)]) -> IssueOut:
-    return issue_service.to_out(issue_service.create_issue(db, payload))
+    return issue_service.to_out(issue_service.create_issue(db, payload), now=datetime.now())
 
 
 @router.get("/{issue_id}", response_model=IssueOut, summary="问题详情与整改轨迹")
 def get_issue(issue_id: int, db: Annotated[Session, Depends(get_db)]) -> IssueOut:
-    return issue_service.to_out(issue_service.get_issue(db, issue_id))
+    return issue_service.to_out(issue_service.get_issue(db, issue_id), now=datetime.now())
 
 
 @router.patch("/{issue_id}", response_model=IssueOut, summary="更新问题信息")
 def update_issue(
     issue_id: int, payload: IssueUpdate, db: Annotated[Session, Depends(get_db)]
 ) -> IssueOut:
-    return issue_service.to_out(issue_service.update_issue(db, issue_id, payload))
+    return issue_service.to_out(issue_service.update_issue(db, issue_id, payload), now=datetime.now())
 
 
 @router.post("/{issue_id}/transitions", response_model=IssueOut, summary="推进整改状态")
 def change_status(
     issue_id: int, payload: IssueStatusUpdate, db: Annotated[Session, Depends(get_db)]
 ) -> IssueOut:
-    return issue_service.to_out(issue_service.change_status(db, issue_id, payload))
+    return issue_service.to_out(issue_service.change_status(db, issue_id, payload), now=datetime.now())
 
 
 @router.get(
@@ -120,7 +122,7 @@ def add_record(
         operator=payload.operator,
         remark=payload.remark,
     )
-    return issue_service.to_out(issue)
+    return issue_service.to_out(issue, now=datetime.now())
 
 
 @router.delete("/{issue_id}", response_model=MessageOut, summary="删除问题")

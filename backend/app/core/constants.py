@@ -88,12 +88,15 @@ GRADE_GOOD = "良好"
 GRADE_PASS = "合格"
 GRADE_FAIL = "不合格"
 
-# 仍处于整改闭环中的状态，用于统计未整改问题
+# 仍处于整改闭环中的状态
 OPEN_ISSUE_STATUSES: list[str] = [
     IssueStatus.PENDING,
     IssueStatus.PROCESSING,
     IssueStatus.REVIEWING,
 ]
+
+# 超期判定唯一使用的状态范围：仅统计仍在整改闭环中的问题
+OVERDUE_ISSUE_STATUSES: tuple[str, ...] = tuple(OPEN_ISSUE_STATUSES)
 
 # 单检查项低于该分数视为不合格项
 INSPECTION_ITEM_PROBLEM_THRESHOLD = 6

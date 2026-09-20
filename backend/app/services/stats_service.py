@@ -32,21 +32,16 @@ def _count(db: Session, model, *conditions) -> int:
     return db.scalar(stmt) or 0
 
 
-def overview(db: Session) -> OverviewStats:
-    now = datetime.now()
+def overview(db: Session, now: datetime | None = None) -> OverviewStats:
+    now = now or datetime.now()
     today_start = datetime.combine(now.date(), time.min)
     week_start = today_start - timedelta(days=6)
     month_start = datetime.combine(date(now.year, now.month, 1), time.min)
 
     issue_total = _count(db, Issue)
     issue_open = _count(db, Issue, Issue.status.in_(OPEN_ISSUE_STATUSES))
-    issue_overdue = _count(
-        db,
-        Issue,
-        Issue.deadline.is_not(None),
-        Issue.deadline < now,
-        Issue.status.in_(OPEN_ISSUE_STATUSES),
-    )
+    # 实时看板指标按本次请求时刻计算；历史月份的统计快照不在这里回填或重算。
+    issue_overdue = _count(db, Issue, *issue_service.overdue_conditions(now))
     done_count = _count(db, Issue, Issue.status == IssueStatus.DONE.value)
     closed_count = _count(db, Issue, Issue.status == IssueStatus.CLOSED.value)
     finished = done_count + closed_count
@@ -227,19 +222,22 @@ def restroom_ranking(db: Session, limit: int = 8) -> list[RestroomRankItem]:
     return ranking[:limit]
 
 
-def dashboard(db: Session, trend_days: int = 14) -> DashboardStats:
-    recent_issues, _ = issue_service.list_issues(db, page=1, page_size=5, sort_by="report_time")
+def dashboard(db: Session, trend_days: int = 14, now: datetime | None = None) -> DashboardStats:
+    now = now or datetime.now()
+    recent_issues, _ = issue_service.list_issues(
+        db, page=1, page_size=5, sort_by="report_time", now=now
+    )
     recent_inspections, _ = inspection_service.list_inspections(
         db, page=1, page_size=5, sort_by="inspect_time"
     )
     return DashboardStats(
-        overview=overview(db),
+        overview=overview(db, now=now),
         issue_by_status=issue_by_status(db),
         issue_by_category=issue_by_category(db),
         issue_by_severity=issue_by_severity(db),
         inspection_trend=inspection_trend(db, days=trend_days),
         districts=district_stats(db),
         top_restrooms=restroom_ranking(db),
-        recent_issues=[issue_service.to_out(issue) for issue in recent_issues],
+        recent_issues=[issue_service.to_out(issue, now=now) for issue in recent_issues],
         recent_inspections=[inspection_service.to_out(item) for item in recent_inspections],
     )

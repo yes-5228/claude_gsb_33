@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 
 import BarList from '../../components/BarList.jsx';
 import DataTable from '../../components/DataTable.jsx';
-import { ScorePill, SeverityTag, StatusTag } from '../../components/Tags.jsx';
+import { OverdueTag, ScorePill, SeverityTag, StatusTag } from '../../components/Tags.jsx';
 import { formatDateTime } from '../../utils/format.js';
 
 const STATUS_COLORS = {
@@ -139,7 +139,16 @@ export function RecentIssuesPanel({ items }) {
           },
           { key: 'restroom', title: '公厕', render: (row) => row.restroom?.name ?? '-' },
           { key: 'severity', title: '程度', render: (row) => <SeverityTag severity={row.severity} /> },
-          { key: 'status', title: '状态', render: (row) => <StatusTag status={row.status} /> },
+          {
+            key: 'status',
+            title: '状态',
+            render: (row) => (
+              <span className="inline">
+                <StatusTag status={row.status} />
+                <OverdueTag isOverdue={row.is_overdue} />
+              </span>
+            ),
+          },
           { key: 'report_time', title: '上报时间', render: (row) => formatDateTime(row.report_time) },
         ]}
         rows={items || []}
